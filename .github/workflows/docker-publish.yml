@@ -7,6 +7,11 @@ on:
   push:
     branches: [main]
     tags: ["v*.*.*"]
+    # Doc-only commits don't change what gets built -- skip the (identical)
+    # rebuild-and-republish they'd otherwise trigger.
+    paths-ignore:
+      - "**.md"
+      - "LICENSE"
   workflow_dispatch: {}
 
 concurrency:
