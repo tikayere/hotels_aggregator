@@ -29,6 +29,19 @@ Docker Hub images, not just against a mock.
   `app/search/indexer.py` as a fallback for a hotel running an older
   `hotel_erp` that predates this field (`refundable: null` on the wire) —
   once every connected hotel is current, that fallback can be deleted.
+- **Webhook receiver forward compatibility (contract §4.3)** — found live,
+  not by inspection: adding `hotel_erp`'s new `waitlist.available` event
+  type initially got a hard `400` here, because the discriminated-union
+  validation in `app/main.py` treated *any* unrecognized `event_type` as a
+  malformed request. That's a real violation of "consumers must ignore
+  unknown event types" — and it would have broken on *any* future event
+  type this build doesn't know about yet, not just this one. Fixed: a
+  Pydantic `union_tag_invalid` error (discriminator mismatch specifically,
+  as opposed to a recognized event type with a genuinely malformed body) is
+  now a `200` no-op, not a `400`. `WaitlistAvailableEvent` itself is also
+  now a real schema (`app/schemas/webhooks.py`), dispatched as a no-op in
+  `sync_engine.py` (same as `ReservationStatusEvent` — it exists for a
+  future traveler notification, not built yet, see below).
 
 ## Implemented, but thinner than the spec describes
 
