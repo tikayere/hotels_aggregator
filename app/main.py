@@ -105,7 +105,22 @@ async def receive_webhook_event(
     # -- Validate the full discriminated-union body -----------------------------
     try:
         event = _webhook_validator.validate_json(raw_body)
-    except ValidationError:
+    except ValidationError as e:
+        # Contract section 4.3: "non-breaking additive changes (new optional
+        # field, new event type) do not require a version bump; consumers
+        # must ignore unknown fields/event types." A discriminator mismatch
+        # (event_type not in WebhookEvent's Union -- Pydantic's
+        # 'union_tag_invalid' error) means exactly that: a hotel_erp running
+        # a newer version than this Aggregator sent an event type this build
+        # doesn't know how to apply yet. That must be a no-op 200, not a
+        # rejection -- otherwise this receiver breaks forward compatibility
+        # for every future event type, not just today's. Any other
+        # validation error (a *recognized* event_type with a malformed body)
+        # is still a genuine 400.
+        if any(err.get("type") == "union_tag_invalid" for err in e.errors()):
+            logger.info("Ignoring unrecognized event_type %r from %r (forward-compat, contract 4.3)",
+                        envelope.event_type, envelope.hotel_id)
+            return Response(status_code=200)
         return _error(400, "VALIDATION_ERROR", "Webhook body failed schema validation")
 
     try:

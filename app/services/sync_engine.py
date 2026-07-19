@@ -29,6 +29,7 @@ from app.schemas.webhooks import (
     RoomTypeDeletedEvent,
     RoomTypeUpsertEvent,
     SyncHeartbeatEvent,
+    WaitlistAvailableEvent,
 )
 from app.search.indexer import index_availability, update_room_type_docs
 
@@ -158,9 +159,11 @@ async def dispatch_event(session: AsyncSession, hotel: Hotel, event) -> None:
         await _delete_room_type(session, event)
     elif isinstance(event, (AvailabilityChangedEvent, RateChangedEvent)):
         await _upsert_availability(session, event)
-    elif isinstance(event, ReservationStatusEvent):
+    elif isinstance(event, (ReservationStatusEvent, WaitlistAvailableEvent)):
         # IDs only, no persistent booking-correctness state (contract 4.7 note):
-        # these exist for traveler notifications / analytics.
+        # these exist for traveler notifications / analytics. No traveler
+        # notification delivery is built yet (ROADMAP.md) -- when it is, this
+        # is the hook point for WaitlistAvailableEvent specifically.
         pass
     elif isinstance(event, SyncHeartbeatEvent):
         await _touch_sync_health(session, hotel.hotel_id, reset_failures=True)

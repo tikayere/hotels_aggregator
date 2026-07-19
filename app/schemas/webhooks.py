@@ -58,6 +58,18 @@ class SyncHeartbeatData(BaseModel):
     server_time: datetime
 
 
+class WaitlistAvailableData(BaseModel):
+    """IDs and dates only, deliberately -- never the waiting traveler's
+    contact info (contract section 4.7 note / section 5.6): this event exists
+    so Service B can trigger its own traveler notification, it is not itself
+    the notification."""
+
+    room_type_id: str
+    rate_plan_code: str
+    check_in: date
+    check_out: date
+
+
 # --- envelope + discriminated union -------------------------------------------
 
 class _EnvelopeBase(BaseModel):
@@ -97,6 +109,11 @@ class SyncHeartbeatEvent(_EnvelopeBase):
     data: SyncHeartbeatData
 
 
+class WaitlistAvailableEvent(_EnvelopeBase):
+    event_type: Literal["waitlist.available"]
+    data: WaitlistAvailableData
+
+
 WebhookEvent = Annotated[
     Union[
         RoomTypeUpsertEvent,
@@ -104,6 +121,7 @@ WebhookEvent = Annotated[
         AvailabilityChangedEvent,
         RateChangedEvent,
         ReservationStatusEvent,
+        WaitlistAvailableEvent,
         SyncHeartbeatEvent,
     ],
     Field(discriminator="event_type"),
