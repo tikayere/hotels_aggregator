@@ -1,0 +1,151 @@
+"""Central Hospitality Platform (Service B) -- FastAPI entrypoint.
+
+Wires the full service: /health, the signature-verified + deduped + dispatched
+webhook receiver (contract sections 4.6/4.7), and every traveler-, admin- and
+partner-facing router. Background jobs run in a separate arq process
+(app/workers/arq_worker.py), not here.
+
+Run locally: `uvicorn app.main:app --reload --port 8000`
+"""
+from __future__ import annotations
+
+import logging
+import uuid
+from datetime import datetime, timezone
+
+from fastapi import Depends, FastAPI, Request, Response
+from fastapi.responses import JSONResponse
+from pydantic import TypeAdapter, ValidationError
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.routes import bookings, hotels_admin, payments, reviews, search, travelers
+from app.config import settings
+from app.db.models import Hotel, HotelCredential, WebhookInbox
+from app.db.session import get_session
+from app.schemas.webhooks import WebhookEvent, _MinimalEnvelope
+from app.search.opensearch_client import close as close_search
+from app.search.opensearch_client import ensure_index
+from app.security.crypto import decrypt_secret
+from app.services.sync_engine import dispatch_event
+from app.webhooks.verify import WebhookAuthError, verify_webhook_signature
+
+logger = logging.getLogger("aggregator.main")
+
+app = FastAPI(title="Central Hospitality Platform", version="1.0")
+
+_webhook_validator = TypeAdapter(WebhookEvent)
+
+
+@app.on_event("startup")
+async def _startup() -> None:
+    # Best-effort search index bootstrap; never blocks app boot if OpenSearch is
+    # not yet reachable (ensure_index swallows/logs its own errors).
+    await ensure_index()
+
+
+@app.on_event("shutdown")
+async def _shutdown() -> None:
+    await close_search()
+
+
+@app.get("/health")
+async def health() -> dict:
+    return {"status": "ok", "api_version": "1.0"}
+
+
+def _error(status: int, code: str, message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status,
+        content={"error": {"code": code, "message": message, "trace_id": str(uuid.uuid4())}},
+    )
+
+
+@app.post("/api/v1/webhooks/events")
+async def receive_webhook_event(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> Response:
+    raw_body = await request.body()
+
+    # -- Pass 1: parse just enough to find the hotel + dedupe key ---------------
+    try:
+        envelope = _MinimalEnvelope.model_validate_json(raw_body)
+    except ValidationError:
+        return _error(400, "VALIDATION_ERROR", "Malformed webhook envelope")
+
+    # Resolve the hotel by slug (event.hotel_id is the hotel slug, contract
+    # 4.1.7) and its per-hotel webhook secret. Fall back to the dev shared
+    # secret only until a Hotel row exists (keeps tests/dev runnable).
+    hotel = await session.scalar(select(Hotel).where(Hotel.slug == envelope.hotel_id))
+    secret = settings.dev_shared_webhook_secret
+    if hotel is not None:
+        cred = await session.get(HotelCredential, hotel.hotel_id)
+        if cred is not None:
+            secret = decrypt_secret(cred.webhook_secret_encrypted)
+
+    # -- Pass 2: verify HMAC over the raw body with that secret -----------------
+    try:
+        verify_webhook_signature(
+            secret=secret,
+            raw_body=raw_body,
+            signature_header=request.headers.get(settings.webhook_signature_header),
+            timestamp_header=request.headers.get(settings.webhook_timestamp_header),
+        )
+    except WebhookAuthError as e:
+        status = 408 if e.code == "REPLAY_WINDOW_EXCEEDED" else 401
+        return _error(status, e.code, e.message)
+
+    if hotel is None:
+        # Verified via dev fallback but no registered hotel to attribute the
+        # event to -- nothing to persist/dispatch. Accept (200) and log.
+        logger.warning("Webhook for unregistered hotel slug %r accepted but not applied", envelope.hotel_id)
+        return Response(status_code=200)
+
+    # -- Validate the full discriminated-union body -----------------------------
+    try:
+        event = _webhook_validator.validate_json(raw_body)
+    except ValidationError:
+        return _error(400, "VALIDATION_ERROR", "Webhook body failed schema validation")
+
+    try:
+        event_uuid = uuid.UUID(envelope.event_id)
+    except (ValueError, TypeError):
+        return _error(400, "VALIDATION_ERROR", "event_id is not a UUID")
+
+    # -- Dedupe (NFR-B4): INSERT ... ON CONFLICT DO NOTHING ---------------------
+    result = await session.execute(
+        pg_insert(WebhookInbox)
+        .values(event_id=event_uuid, hotel_id=hotel.hotel_id, event_type=envelope.event_type)
+        .on_conflict_do_nothing(index_elements=[WebhookInbox.event_id])
+    )
+    await session.commit()
+    if result.rowcount == 0:
+        # Already processed this event_id -- idempotent no-op, still 200.
+        return Response(status_code=200)
+
+    # -- Dispatch + mark processed ----------------------------------------------
+    try:
+        await dispatch_event(session, hotel, event)
+    except Exception:  # noqa: BLE001
+        # Leave the inbox row without processed_at so a later reconcile / manual
+        # replay can notice it; surface a 500 so Service A retries (at-least-once).
+        logger.exception("Failed to dispatch webhook %s", envelope.event_id)
+        return _error(500, "INTERNAL_ERROR", "Failed to apply event")
+
+    inbox = await session.get(WebhookInbox, event_uuid)
+    if inbox is not None:
+        inbox.processed_at = datetime.now(timezone.utc)
+        await session.commit()
+
+    return Response(status_code=200)
+
+
+# --- Routers ------------------------------------------------------------------
+app.include_router(travelers.router)
+app.include_router(bookings.router)
+app.include_router(payments.router)
+app.include_router(search.router)
+app.include_router(reviews.router)
+app.include_router(hotels_admin.router)
+app.include_router(hotels_admin.public_router)

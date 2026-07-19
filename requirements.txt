@@ -1,0 +1,42 @@
+# Central Hospitality Platform (Service B) -- runtime dependencies.
+# Pin exact versions with `pip freeze` once the project is bootstrapped;
+# these are the deliberate choices from phase_2_service_contracts.md section 3.3.
+# Identical stack to the sibling bus/aggregator on purpose (section 5 decision 11).
+
+fastapi>=0.115
+uvicorn[standard]>=0.32
+pydantic>=2.9
+pydantic-settings>=2.5
+
+sqlalchemy>=2.0.35
+alembic>=1.13
+asyncpg>=0.29          # app runtime (async)
+psycopg[binary]>=3.2    # alembic migrations (sync)
+
+redis>=5.1                # arq's own dependency spec (redis[hiredis]<6,>=4.2.0)
+                          # transitively caps this below 6.x even though this
+                          # line has no upper bound -- expected, not a bug, if
+                          # `pip list` shows a 5.x release instead of the
+                          # newest redis-py.
+arq>=0.26                # background workers: webhook consumer, reconciliation
+                          # poller, hold-expiry watcher (section 3.3) -- swap for
+                          # Celery if the team prefers it, no code outside
+                          # app/workers/ depends on which one is used
+
+opensearch-py[async]>=2.7  # [async] pulls aiohttp, required by AsyncOpenSearch
+                          # verified compatible with the opensearchproject/opensearch:2.17.0
+                          # server pinned in docker-compose.dev.yml -- opensearch-py's
+                          # own compatibility policy covers server versions 1.x-3.x per
+                          # major client version, as long as APIs removed in the next
+                          # major aren't used. Re-check that policy before bumping
+                          # either side independently.
+
+httpx>=0.27               # outbound calls to Hotel ERPs (contract section 4.5)
+cryptography>=43.0         # encrypts hotel_credential columns, see .env.example
+
+python-jose[cryptography]>=3.3   # traveler-account JWTs (FR-B6), if not delegated
+                                   # to an external identity provider
+bcrypt>=4.0               # traveler password hashing (FR-B6). Used directly
+                          # (not via passlib) to avoid passlib's bcrypt>=4.x
+                          # backend-detection breakage.
+email-validator>=2.0       # required by pydantic EmailStr used in request models
