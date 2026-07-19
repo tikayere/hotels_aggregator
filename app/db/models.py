@@ -139,6 +139,15 @@ class RateAvailabilityIndex(Base):
     price_minor: Mapped[int] = mapped_column(Integer, nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
     rooms_available_cached: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Mirrors the hotel's RatePlan.refundable, carried on every
+    # availability.changed/rate.changed event and on GET /availability's
+    # AvailabilityQuoteLine (contract section 4.4/4.7) -- stored here instead
+    # of inferred from rate_plan_code naming conventions (the previous
+    # approach, unreliable across hotels with different code schemes).
+    # Nullable only because a webhook/reconciliation payload predating this
+    # column's introduction won't have carried it; treat NULL as "unknown",
+    # not as either true or false, when filtering search results.
+    refundable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     source: Mapped[SyncSource] = mapped_column(SAEnum(SyncSource, name="sync_source"), nullable=False)
 

@@ -40,6 +40,12 @@ class NightlyAvailabilityData(BaseModel):
     rooms_available: int
     price_minor: int
     currency: str
+    # Optional, not required: an older hotel_erp deployment that hasn't
+    # picked up this field yet must still validate here (contract section
+    # 4.3 -- additive fields never require a version bump, and a consumer
+    # must tolerate a sender that doesn't send one yet). None means
+    # "unknown," not "false" -- see RateAvailabilityIndex.refundable.
+    refundable: bool | None = None
 
 
 class ReservationStatusData(BaseModel):

@@ -18,10 +18,12 @@ from app.search.opensearch_client import INDEX_NAME, get_client
 
 logger = logging.getLogger("aggregator.indexer")
 
-# Rate-plan-code substrings that mark a non-refundable rate. The contract never
-# ships refundable metadata to Service B (no rate_plan_index in section 3.4, and
-# the availability/rate webhook payloads omit it), so refundability is inferred
-# from the code by convention. See the deviations note in the delivery report.
+# Fallback only: rate-plan-code substrings that mark a non-refundable rate,
+# used exclusively when a payload doesn't carry a real `refundable` value
+# (an older hotel_erp deployment that predates that field). Once every
+# connected hotel is on a version that sends it, this and _infer_refundable
+# below can be deleted -- the real value from RateAvailabilityIndex.refundable
+# should always be preferred over this guess.
 _NONREFUNDABLE_MARKERS = ("NONREF", "NON-REF", "NR", "NONREFUNDABLE", "ADVANCE", "SAVER")
 
 
@@ -44,6 +46,7 @@ async def index_availability(
     currency: str,
     rooms_available: int,
     updated_at: str,
+    refundable: bool | None = None,
 ) -> None:
     """Upsert one (room type, night, rate plan) search document, denormalizing
     the room type + hotel attributes needed for search filters.
@@ -78,7 +81,7 @@ async def index_availability(
         "active": rt.active,
         "date": date_str,
         "rate_plan_code": rate_plan_code,
-        "refundable": _infer_refundable(rate_plan_code),
+        "refundable": refundable if refundable is not None else _infer_refundable(rate_plan_code),
         "price_minor": price_minor,
         "currency": currency,
         "rooms_available": rooms_available,

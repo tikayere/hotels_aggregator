@@ -2,9 +2,13 @@
 
 Registers a Hotel + HotelCredential (api_key / webhook_secret encrypted at rest
 via the Fernet helper before storage -- never plaintext), and exposes each
-hotel's SyncHealth. NOTE: these are operator/admin endpoints; in production they
-must sit behind an admin auth guard (out of scope for this build -- flagged in
-the delivery report).
+hotel's SyncHealth. `router` (the /admin/hotels routes: create/list/update/
+delete a hotel and its credentials) is operator-only, gated by `require_admin`
+-- these routes can fully take over a hotel's sync relationship with this
+platform, so they must never be reachable without the admin key. `public_router`
+(GET .../sync-health) is deliberately left open: it exposes no secrets, and a
+hotel's own ops team or a status page may reasonably want to read it
+unauthenticated.
 """
 from __future__ import annotations
 
@@ -12,12 +16,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import require_admin
 from app.db.models import Hotel, HotelCredential, HotelStatus, SyncHealth
 from app.db.session import get_session
 from app.schemas.api import HotelCreate, HotelOut, HotelUpdate, SyncHealthOut
 from app.security.crypto import encrypt_secret
 
-router = APIRouter(prefix="/api/v1/admin/hotels", tags=["hotels-admin"])
+router = APIRouter(prefix="/api/v1/admin/hotels", tags=["hotels-admin"], dependencies=[Depends(require_admin)])
 public_router = APIRouter(prefix="/api/v1/hotels", tags=["hotels-admin"])
 
 

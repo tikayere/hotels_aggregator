@@ -146,6 +146,11 @@ async def _resync_one_hotel_availability(session: AsyncSession, hotel: Hotel, cr
             )
             for line in quote.get("quotes", []):
                 rate_plan_code = line["rate_plan_code"]
+                # .get(), not [...]: an older hotel_erp deployment predating
+                # AvailabilityQuoteLine.refundable (contract section 4.4)
+                # won't send this field yet -- None is "unknown," handled the
+                # same way sync_engine.py's webhook path handles it.
+                refundable = line.get("refundable")
                 for night in line.get("nightly_rates", []):
                     values = {
                         "global_room_type_id": rt.global_room_type_id,
@@ -154,6 +159,7 @@ async def _resync_one_hotel_availability(session: AsyncSession, hotel: Hotel, cr
                         "price_minor": night["price_minor"],
                         "currency": night["currency"],
                         "rooms_available_cached": night["rooms_available"],
+                        "refundable": refundable,
                         "updated_at": now,
                         "source": SyncSource.reconciliation,
                     }
@@ -176,6 +182,7 @@ async def _resync_one_hotel_availability(session: AsyncSession, hotel: Hotel, cr
                         price_minor=night["price_minor"],
                         currency=night["currency"],
                         rooms_available=night["rooms_available"],
+                        refundable=refundable,
                         updated_at=now.isoformat(),
                     )
             await session.commit()

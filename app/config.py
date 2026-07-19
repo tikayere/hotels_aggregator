@@ -71,6 +71,14 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expiry_minutes: int = 60 * 24
 
+    # --- Admin auth (FR-B1 hotel onboarding/registry routes) -- same
+    # dev-default-with-loud-name pattern as jwt_secret_key above.
+    # docker-compose.prod.yml requires a real value via `${ADMIN_API_KEY:?...}`;
+    # nothing enforces that here, since this file's job is dev-friendly
+    # defaults, not production policy -- see that compose file for the
+    # actual production guardrail.
+    admin_api_key: str = "dev-admin-key-change-me"
+
     @property
     def sync_database_url(self) -> str:
         """psycopg (sync) URL for any synchronous consumer (e.g. arq startup)."""

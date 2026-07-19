@@ -112,6 +112,7 @@ async def _upsert_availability(session: AsyncSession, event: AvailabilityChanged
         "price_minor": d.price_minor,
         "currency": d.currency,
         "rooms_available_cached": d.rooms_available,
+        "refundable": d.refundable,
         "updated_at": now,
         "source": SyncSource.webhook,
     }
@@ -119,6 +120,7 @@ async def _upsert_availability(session: AsyncSession, event: AvailabilityChanged
         "price_minor": d.price_minor,
         "currency": d.currency,
         "rooms_available_cached": d.rooms_available,
+        "refundable": d.refundable,
         "updated_at": now,
         "source": SyncSource.webhook,
     }
@@ -141,6 +143,7 @@ async def _upsert_availability(session: AsyncSession, event: AvailabilityChanged
         price_minor=d.price_minor,
         currency=d.currency,
         rooms_available=d.rooms_available,
+        refundable=d.refundable,
         updated_at=now.isoformat(),
     )
 
