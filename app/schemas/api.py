@@ -33,6 +33,23 @@ class TravelerOut(BaseModel):
     phone: str | None = None
 
 
+class TravelerUpdate(BaseModel):
+    """All fields optional -- send only what changed. Email is editable here
+    (unlike a hotel's slug/legal_name on the portal side) since nothing else
+    in the contract references a traveler by email; changing it just means
+    that's the address used for the next login. Password is deliberately
+    NOT here -- see PasswordChange, which requires the current password."""
+
+    name: str | None = None
+    email: EmailStr | None = None
+    phone: str | None = None
+
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=8)
+
+
 # --- hotel onboarding (admin) -------------------------------------------------
 
 class HotelCreate(BaseModel):

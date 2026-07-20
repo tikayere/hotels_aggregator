@@ -11,10 +11,12 @@ from app.db.session import get_session
 from app.schemas.api import (
     BookingOut,
     HotelOut,
+    PasswordChange,
     TokenResponse,
     TravelerLogin,
     TravelerOut,
     TravelerRegister,
+    TravelerUpdate,
 )
 from app.security.auth import create_access_token, hash_password, verify_password
 
@@ -50,6 +52,39 @@ async def me(traveler: TravelerAccount = Depends(get_current_traveler)) -> Trave
     return TravelerOut(
         traveler_id=traveler.traveler_id, name=traveler.name, email=traveler.email, phone=traveler.phone
     )
+
+
+@router.patch("/me", response_model=TravelerOut)
+async def update_me(
+    payload: TravelerUpdate,
+    traveler: TravelerAccount = Depends(get_current_traveler),
+    session: AsyncSession = Depends(get_session),
+) -> TravelerOut:
+    if payload.email is not None and payload.email != traveler.email:
+        existing = await session.scalar(select(TravelerAccount).where(TravelerAccount.email == payload.email))
+        if existing is not None:
+            raise HTTPException(status.HTTP_409_CONFLICT, detail="Email already registered")
+        traveler.email = payload.email
+    if payload.name is not None:
+        traveler.name = payload.name
+    if payload.phone is not None:
+        traveler.phone = payload.phone
+    await session.commit()
+    return TravelerOut(
+        traveler_id=traveler.traveler_id, name=traveler.name, email=traveler.email, phone=traveler.phone
+    )
+
+
+@router.post("/me/password", status_code=204)
+async def change_password(
+    payload: PasswordChange,
+    traveler: TravelerAccount = Depends(get_current_traveler),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    if not verify_password(payload.current_password, traveler.hashed_password):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Current password is incorrect")
+    traveler.hashed_password = hash_password(payload.new_password)
+    await session.commit()
 
 
 @router.get("/me/bookings", response_model=list[BookingOut])
