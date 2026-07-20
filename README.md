@@ -31,8 +31,14 @@ See [`ROADMAP.md`](ROADMAP.md) for what's implemented vs. what's still open.
 | `app/services/payment.py` | A mock payment gateway behind a small interface — the seam a real gateway (Stripe, etc.) plugs into later without the orchestrator needing to change. |
 | `app/search/`, `app/api/routes/search.py` | OpenSearch-backed search — reads only from the local index, never calls a Hotel ERP synchronously on the read path. |
 | `app/workers/reconciliation.py` | Per-hotel drift-correction poller with a circuit breaker, treating every Hotel ERP as untrusted/unreliable. |
-| `app/security/crypto.py`, `auth.py` | Fernet encryption for stored hotel credentials; bcrypt + JWT for traveler accounts. |
+| `app/security/crypto.py`, `auth.py` | Fernet encryption for stored hotel credentials; bcrypt + JWT for traveler *and* hotel-portal accounts (two independent `scope` values on the same signing key — a token minted for one is rejected by the other's routes). |
+| `app/api/routes/hotel_portal.py` | Hotel Portal self-service: login, own-hotel profile edit, sync-health, read-only room-types/bookings, promotion CRUD — every route scoped by the logged-in `HotelUser.hotel_id`, never a hotel_id/slug taken from the request. |
 | `Dockerfile` | Self-contained build, runs as a non-root user. Published to Docker Hub by `.github/workflows/docker-publish.yml` on every push to `main`. |
+
+See the sibling `hotels` project's `openapi/aggregator-client-api.yaml` for
+the full contract every client of this service's traveler- and
+hotel-portal-facing API is built against — including that same project's
+`portal/` app, a real frontend for the Hotel Portal routes above.
 
 ## Running it
 

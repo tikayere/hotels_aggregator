@@ -94,5 +94,6 @@ async def hotel_detail(slug: str, session: AsyncSession = Depends(get_session)) 
         lat=hotel.lat,
         lon=hotel.lon,
         star_rating=hotel.star_rating,
+        photos=hotel.photos,
         status=hotel.status.value,
     )

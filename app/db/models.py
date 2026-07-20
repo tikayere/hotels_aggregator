@@ -59,6 +59,12 @@ class Hotel(Base):
     lat: Mapped[float | None] = mapped_column(Float)
     lon: Mapped[float | None] = mapped_column(Float)
     star_rating: Mapped[int | None] = mapped_column(SmallInteger)
+    # Marketing photos (exterior/lobby/amenities), Aggregator-owned -- distinct
+    # from RoomTypeIndex.photos, which mirrors a room type's own photos from
+    # the hotel's ERP and stays read-only here (NFR-B3: never authoritative
+    # for a hotel's inventory). A list of URLs into whatever the operator's
+    # photo_cdn_base_url points at; this service never handles file uploads.
+    photos: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     status: Mapped[HotelStatus] = mapped_column(
         SAEnum(HotelStatus, name="hotel_status"), nullable=False, default=HotelStatus.onboarding
     )
@@ -304,3 +310,54 @@ class SyncHealth(Base):
     )
 
     hotel: Mapped["Hotel"] = relationship(back_populates="sync_health")
+
+
+class HotelUserRole(str, enum.Enum):
+    owner = "owner"
+    manager = "manager"
+
+
+class HotelUser(Base):
+    """A login for the Hotel Portal (FR-B1) -- a hotel's own staff managing
+    their listing, distinct from both the platform-operator admin key
+    (require_admin, full cross-hotel control) and a TravelerAccount (the
+    marketplace's own customers). Scoped to exactly one hotel; provisioned by
+    an operator via POST /admin/hotels/{slug}/users, not self-registered --
+    onboarding a hotel is still an operator-mediated step (contract FR-B1).
+    """
+
+    __tablename__ = "hotel_user"
+
+    hotel_user_id: Mapped[uuid.UUID] = _uuid_pk()
+    hotel_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("hotel.hotel_id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[HotelUserRole] = mapped_column(
+        SAEnum(HotelUserRole, name="hotel_user_role"), nullable=False, default=HotelUserRole.manager
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Promotion(Base):
+    """A hotel-authored discount/offer, entirely Aggregator-owned -- has no
+    equivalent in the ERP contract (Pricing Rule there governs actual rate
+    calculation; this is marketing copy layered on top for the portal/web/
+    mobile listing, not something Service A needs to know about).
+    """
+
+    __tablename__ = "promotion"
+
+    promotion_id: Mapped[uuid.UUID] = _uuid_pk()
+    hotel_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("hotel.hotel_id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    discount_percentage: Mapped[float] = mapped_column(Float, nullable=False)
+    starts_on: Mapped[date] = mapped_column(Date, nullable=False)
+    ends_on: Mapped[date] = mapped_column(Date, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -76,6 +76,7 @@ class HotelOut(BaseModel):
     lat: float | None = None
     lon: float | None = None
     star_rating: int | None = None
+    photos: list[str] = []
     status: str
 
 
@@ -85,6 +86,89 @@ class SyncHealthOut(BaseModel):
     last_reconciliation_at: datetime | None = None
     consecutive_failures: int
     status: str
+
+
+# --- hotel portal (hotel-user auth + self-service) -----------------------------
+
+class HotelUserCreate(BaseModel):
+    """Used by the operator-only POST /admin/hotels/{slug}/users -- a hotel's
+    portal login is provisioned, not self-registered (see HotelUser model)."""
+
+    name: str
+    email: EmailStr
+    password: str = Field(min_length=8)
+    role: str = "manager"
+
+
+class HotelUserOut(BaseModel):
+    hotel_user_id: uuid.UUID
+    hotel_id: uuid.UUID
+    name: str
+    email: EmailStr
+    role: str
+
+
+class HotelPortalLogin(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class HotelProfileUpdate(BaseModel):
+    """Fields a hotel's own portal login may edit about itself. Deliberately
+    excludes slug/legal_name/country/status and every HotelCredential field
+    (api_base_url/api_key/webhook_secret) -- those stay operator-only
+    (hotels_admin.py), since a compromised portal login must never be able to
+    redirect where this platform sends webhooks or calls back into the ERP.
+    """
+
+    display_name: str | None = None
+    city: str | None = None
+    lat: float | None = None
+    lon: float | None = None
+    star_rating: int | None = Field(default=None, ge=1, le=5)
+    photos: list[str] | None = None
+
+
+class PromotionCreate(BaseModel):
+    title: str
+    description: str | None = None
+    discount_percentage: float = Field(gt=0, le=100)
+    starts_on: date
+    ends_on: date
+
+
+class PromotionUpdate(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    discount_percentage: float | None = Field(default=None, gt=0, le=100)
+    starts_on: date | None = None
+    ends_on: date | None = None
+    active: bool | None = None
+
+
+class PromotionOut(BaseModel):
+    promotion_id: uuid.UUID
+    hotel_id: uuid.UUID
+    title: str
+    description: str | None = None
+    discount_percentage: float
+    starts_on: date
+    ends_on: date
+    active: bool
+
+
+class RoomTypeOut(BaseModel):
+    """Read-only mirror of a hotel's room type -- editing happens in the ERP
+    (NFR-B3: this service is never authoritative for inventory)."""
+
+    global_room_type_id: str
+    name: str
+    description: str | None = None
+    max_occupancy_adults: int
+    max_occupancy_children: int
+    amenities: list[str] = []
+    photos: list[str] = []
+    active: bool
 
 
 # --- bookings -----------------------------------------------------------------

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -78,6 +79,18 @@ class Settings(BaseSettings):
     # defaults, not production policy -- see that compose file for the
     # actual production guardrail.
     admin_api_key: str = "dev-admin-key-change-me"
+
+    # --- CORS (portal/web client origins, contract
+    # openapi/aggregator-client-api.yaml) -- comma-separated in the
+    # environment, "*" (any origin) by default since nothing here relies on
+    # cookies/allow_credentials to be safe wide open. Tighten to real client
+    # origins for a production deployment that wants defense in depth beyond
+    # each route's own auth.
+    cors_allowed_origins_raw: str = Field(default="*", alias="CORS_ALLOWED_ORIGINS")
+
+    @property
+    def cors_allowed_origins(self) -> list[str]:
+        return [o.strip() for o in self.cors_allowed_origins_raw.split(",") if o.strip()]
 
     @property
     def sync_database_url(self) -> str:

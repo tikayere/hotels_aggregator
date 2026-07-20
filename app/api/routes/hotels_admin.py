@@ -17,9 +17,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_admin
-from app.db.models import Hotel, HotelCredential, HotelStatus, SyncHealth
+from app.db.models import Hotel, HotelCredential, HotelStatus, HotelUser, HotelUserRole, SyncHealth
 from app.db.session import get_session
-from app.schemas.api import HotelCreate, HotelOut, HotelUpdate, SyncHealthOut
+from app.schemas.api import HotelCreate, HotelOut, HotelUpdate, HotelUserCreate, HotelUserOut, SyncHealthOut
+from app.security.auth import hash_password
 from app.security.crypto import encrypt_secret
 
 router = APIRouter(prefix="/api/v1/admin/hotels", tags=["hotels-admin"], dependencies=[Depends(require_admin)])
@@ -37,6 +38,7 @@ def _to_out(h: Hotel) -> HotelOut:
         lat=h.lat,
         lon=h.lon,
         star_rating=h.star_rating,
+        photos=h.photos,
         status=h.status.value,
     )
 
@@ -121,6 +123,51 @@ async def delete_hotel(slug: str, session: AsyncSession = Depends(get_session)) 
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Hotel not found")
     await session.delete(hotel)
     await session.commit()
+
+
+@router.post("/{slug}/users", response_model=HotelUserOut, status_code=201)
+async def create_hotel_user(
+    slug: str, payload: HotelUserCreate, session: AsyncSession = Depends(get_session)
+) -> HotelUserOut:
+    """Provisions a Hotel Portal login for this hotel. Operator-only and
+    deliberately so -- see hotel_portal.py's module docstring for why
+    self-registration would be the wrong shape for this (onboarding a hotel
+    is an operator-mediated step, contract FR-B1). Give the operator-chosen
+    password to the hotel out of band; nothing here emails it anywhere.
+    """
+    hotel = await session.scalar(select(Hotel).where(Hotel.slug == slug))
+    if hotel is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Hotel not found")
+    existing = await session.scalar(select(HotelUser).where(HotelUser.email == payload.email))
+    if existing is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="Email already in use")
+    try:
+        role = HotelUserRole(payload.role)
+    except ValueError:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Invalid role")
+
+    user = HotelUser(
+        hotel_id=hotel.hotel_id,
+        name=payload.name,
+        email=payload.email,
+        hashed_password=hash_password(payload.password),
+        role=role,
+    )
+    session.add(user)
+    await session.commit()
+    return HotelUserOut(hotel_user_id=user.hotel_user_id, hotel_id=user.hotel_id, name=user.name, email=user.email, role=user.role.value)
+
+
+@router.get("/{slug}/users", response_model=list[HotelUserOut])
+async def list_hotel_users(slug: str, session: AsyncSession = Depends(get_session)) -> list[HotelUserOut]:
+    hotel = await session.scalar(select(Hotel).where(Hotel.slug == slug))
+    if hotel is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Hotel not found")
+    rows = await session.scalars(select(HotelUser).where(HotelUser.hotel_id == hotel.hotel_id))
+    return [
+        HotelUserOut(hotel_user_id=u.hotel_user_id, hotel_id=u.hotel_id, name=u.name, email=u.email, role=u.role.value)
+        for u in rows
+    ]
 
 
 @public_router.get("/{slug}/sync-health", response_model=SyncHealthOut)

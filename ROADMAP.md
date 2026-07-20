@@ -43,11 +43,48 @@ Docker Hub images, not just against a mock.
   `sync_engine.py` (same as `ReservationStatusEvent` — it exists for a
   future traveler notification, not built yet, see below).
 
+- **FR-B1 Hotel Portal, self-service side** — a `HotelUser` model/table,
+  scoped to exactly one hotel, with its own JWT scope (`hotel_portal`,
+  distinct from a traveler's `traveler` scope and from the operator's
+  `X-Admin-Api-Key` — a token minted for one is rejected by the other two's
+  routes, checked server-side, verified live in both directions). Provisioned
+  by the operator (`POST /admin/hotels/{slug}/users`), not self-registered —
+  onboarding stays operator-mediated. New `app/api/routes/hotel_portal.py`:
+  login, own profile (editable: display_name/city/star_rating/photos — never
+  legal_name/slug/country/status/ERP credentials, which stay operator-only),
+  sync-health, and full promotion CRUD (`Promotion`, a new
+  Aggregator-owned model with no ERP equivalent). Room types and bookings are
+  exposed read-only (NFR-B3 — this service is never authoritative for a
+  hotel's inventory, and that now applies to what the portal is *allowed to
+  write*, not just what the Sync Engine writes). `Hotel.photos` (marketing
+  photos — exterior/lobby/amenities) is new too, distinct from
+  `RoomTypeIndex.photos` which stays a read-only ERP mirror. A real
+  frontend now exists for this — see the sibling `hotels` project's
+  `portal/` (React/TypeScript), verified end-to-end against this API with a
+  real headless-browser pass (login, dashboard, profile edit incl. photos,
+  full promotion CRUD, logout), not just curl.
+- **Error response shape, standardized across every client-facing route** —
+  found while writing `openapi/aggregator-client-api.yaml` (the sibling
+  `hotels` project, the shared contract for the portal/future web/mobile
+  clients): most routes raised `HTTPException(status, detail="a string")`,
+  producing `{"detail": "..."}`, while `bookings.py` raised
+  `detail={"code":..., "message":...}`, producing a *differently shaped*
+  `{"detail": {...}}` — two incompatible envelopes depending which endpoint
+  failed, a real problem for any client written against one shape. Fixed
+  with two global exception handlers in `app/main.py` that normalize both
+  into the one envelope the webhook receiver's own `_error()` helper already
+  used (`{"error": {"code", "message", "trace_id"}}`) — verified live across
+  a plain-string 404, a dict-shaped booking error, a pydantic 422, and a
+  manual 400, all now identically shaped.
+- **CORS** — was entirely unconfigured (fine when nothing but curl/tests hit
+  this API; not fine once a real browser-based client, the portal, needed
+  to). `CORSMiddleware` added, origins configurable via
+  `CORS_ALLOWED_ORIGINS` (defaults wide open — every route here already
+  guards itself by bearer/admin-key auth or is public read data, not by
+  request origin).
+
 ## Implemented, but thinner than the spec describes
 
-- **FR-B1 Hotel Portal** — onboarding CRUD and sync-health exist and are now
-  authenticated, but there's still no promotions/photos management and no
-  actual portal UI (this whole service is API-only, no frontend).
 - **FR-B10 partner API** — the contract's own design has partners use the
   same API travelers do (§3.1), which this satisfies as-is, but there's no
   separate partner API-key issuance/rate-limiting tier distinct from

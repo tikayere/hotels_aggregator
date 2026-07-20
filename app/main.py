@@ -13,14 +13,16 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import Depends, FastAPI, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.routes import bookings, hotels_admin, payments, reviews, search, travelers
+from app.api.routes import bookings, hotel_portal, hotels_admin, payments, reviews, search, travelers
 from app.config import settings
 from app.db.models import Hotel, HotelCredential, WebhookInbox
 from app.db.session import get_session
@@ -34,6 +36,22 @@ from app.webhooks.verify import WebhookAuthError, verify_webhook_signature
 logger = logging.getLogger("aggregator.main")
 
 app = FastAPI(title="Central Hospitality Platform", version="1.0")
+
+# Portal/web/mobile are separate origins from this API (contract:
+# openapi/aggregator-client-api.yaml) -- browsers enforce CORS, native mobile
+# doesn't, so this only actually matters for the portal and any future
+# traveler web app, but there's no harm enabling it uniformly. Wide open by
+# default (`*`) since every route here is either public read data or guarded
+# by its own bearer/admin-key check, not by request origin; tighten via
+# cors_allowed_origins if a production deployment wants to restrict it to
+# known client domains.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_allowed_origins,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 _webhook_validator = TypeAdapter(WebhookEvent)
 
@@ -60,6 +78,46 @@ def _error(status: int, code: str, message: str) -> JSONResponse:
         status_code=status,
         content={"error": {"code": code, "message": message, "trace_id": str(uuid.uuid4())}},
     )
+
+
+_STATUS_CODES = {
+    400: "VALIDATION_ERROR",
+    401: "UNAUTHORIZED",
+    403: "FORBIDDEN",
+    404: "NOT_FOUND",
+    409: "CONFLICT",
+    422: "VALIDATION_ERROR",
+    500: "INTERNAL_ERROR",
+    503: "SERVICE_UNAVAILABLE",
+}
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """Every client-facing route in this service raises FastAPI's own
+    HTTPException, historically with `detail` as either a plain string (most
+    routes) or a {"code", "message"} dict (bookings.py, forwarding
+    OrchestratorError/HotelERPError as-is). That split meant two different
+    JSON shapes depending which endpoint failed -- a real problem for a
+    client contract meant to be built against once. This normalizes both
+    into the one envelope openapi/aggregator-client-api.yaml documents,
+    matching what the webhook receiver's own _error() already returns.
+    """
+    if isinstance(exc.detail, dict) and "code" in exc.detail:
+        code = str(exc.detail["code"])
+        message = str(exc.detail.get("message", ""))
+    else:
+        code = _STATUS_CODES.get(exc.status_code, "ERROR")
+        message = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+    return _error(exc.status_code, code, message)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    first = exc.errors()[0] if exc.errors() else {}
+    field = ".".join(str(p) for p in first.get("loc", []) if p != "body")
+    message = f"{field}: {first.get('msg')}" if field else (first.get("msg") or "Validation failed")
+    return _error(422, "VALIDATION_ERROR", message)
 
 
 @app.post("/api/v1/webhooks/events")
@@ -164,3 +222,4 @@ app.include_router(search.router)
 app.include_router(reviews.router)
 app.include_router(hotels_admin.router)
 app.include_router(hotels_admin.public_router)
+app.include_router(hotel_portal.router)

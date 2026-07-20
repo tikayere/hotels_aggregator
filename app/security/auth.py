@@ -25,22 +25,35 @@ def verify_password(plaintext: str, hashed: str) -> bool:
         return False
 
 
-def create_access_token(traveler_id: uuid.UUID, email: str) -> str:
+def create_access_token(traveler_id: uuid.UUID, email: str, *, scope: str = "traveler") -> str:
+    """`scope` distinguishes a traveler token from a hotel-portal token
+    (create_hotel_access_token below) so one can never be replayed as the
+    other even though both are plain bearer JWTs signed with the same key --
+    get_current_traveler / get_current_hotel_user each check it explicitly.
+    """
     now = datetime.now(timezone.utc)
     payload = {
         "sub": str(traveler_id),
         "email": email,
+        "scope": scope,
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=settings.jwt_expiry_minutes)).timestamp()),
     }
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
-def decode_access_token(token: str) -> uuid.UUID | None:
-    """Return the traveler_id encoded in a valid token, else None."""
+def create_hotel_access_token(hotel_user_id: uuid.UUID, email: str) -> str:
+    return create_access_token(hotel_user_id, email, scope="hotel_portal")
+
+
+def _decode_subject(token: str, *, expected_scope: str) -> uuid.UUID | None:
     try:
         payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
     except JWTError:
+        return None
+    # Tokens issued before `scope` existed have none; treat those as "traveler"
+    # (the only scope that existed at the time) rather than rejecting them.
+    if payload.get("scope", "traveler") != expected_scope:
         return None
     sub = payload.get("sub")
     if not sub:
@@ -49,3 +62,13 @@ def decode_access_token(token: str) -> uuid.UUID | None:
         return uuid.UUID(sub)
     except (ValueError, TypeError):
         return None
+
+
+def decode_access_token(token: str) -> uuid.UUID | None:
+    """Return the traveler_id encoded in a valid traveler-scoped token, else None."""
+    return _decode_subject(token, expected_scope="traveler")
+
+
+def decode_hotel_access_token(token: str) -> uuid.UUID | None:
+    """Return the hotel_user_id encoded in a valid hotel-portal-scoped token, else None."""
+    return _decode_subject(token, expected_scope="hotel_portal")
