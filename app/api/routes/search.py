@@ -5,11 +5,19 @@ The index holds one document per (room type, night, rate plan). A stay search
 fetches every matching night in [check_in, check_out), then keeps only
 (room type, rate plan) combinations that have availability for *every* night,
 summing the nightly prices into a stay total.
+
+check_in/check_out are optional so a client can offer a browse-first
+experience (list what's available, then let the traveler narrow by dates/
+city/etc. incrementally) instead of forcing a full form before showing
+anything -- every other filter was already optional. Omitting one or both
+defaults to a representative 1-night window starting tomorrow, which is
+enough to show a real per-night price without requiring the caller to guess
+a stay length that means anything.
 """
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -21,8 +29,8 @@ router = APIRouter(prefix="/api/v1", tags=["search"])
 
 @router.get("/search", response_model=SearchResponse)
 async def search(
-    check_in: date = Query(...),
-    check_out: date = Query(...),
+    check_in: date | None = Query(None),
+    check_out: date | None = Query(None),
     city: str | None = None,
     adults: int = Query(1, ge=1),
     children: int = Query(0, ge=0),
@@ -34,6 +42,11 @@ async def search(
     refundable: bool | None = None,
     limit: int = Query(50, ge=1, le=200),
 ) -> SearchResponse:
+    if check_in is None:
+        check_in = date.today() + timedelta(days=1)
+    if check_out is None:
+        check_out = check_in + timedelta(days=1)
+
     nights = (check_out - check_in).days
     if nights <= 0:
         raise HTTPException(400, detail="check_out must be after check_in")
