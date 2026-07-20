@@ -40,3 +40,9 @@ bcrypt>=4.0               # traveler password hashing (FR-B6). Used directly
                           # (not via passlib) to avoid passlib's bcrypt>=4.x
                           # backend-detection breakage.
 email-validator>=2.0       # required by pydantic EmailStr used in request models
+
+stripe>=11.1               # real payment gateway (FR-B5, app/services/payment.py's
+                          # StripePaymentGateway) -- >=7.0 for the async client
+                          # methods (create_async/capture_async/etc), which this
+                          # app needs since it never blocks the event loop with a
+                          # synchronous HTTP call elsewhere either.

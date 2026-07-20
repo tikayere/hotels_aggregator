@@ -15,8 +15,10 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+import stripe
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.db.models import BookingReference, PaymentStatus, PaymentTransaction
 
 logger = logging.getLogger("aggregator.payment")
@@ -72,11 +74,105 @@ class MockPaymentGateway(PaymentGateway):
         return GatewayResult(gateway_ref=f"{gateway_ref}-refund", success=True)
 
 
+# Stripe's amount is in the currency's smallest unit for every currency
+# except a fixed list of "zero-decimal" currencies, where the smallest unit
+# IS the base unit (no /100). This codebase's own convention treats
+# amount_minor uniformly (always the ERP/search-index price divided by
+# nothing further), which matches Stripe's default for every currency this
+# build has actually exercised (USD) but would silently overcharge 100x on
+# a zero-decimal currency -- listed here so that's a loud, deliberate
+# decision to revisit rather than a silent bug if one of these ever comes up.
+# https://docs.stripe.com/currencies#zero-decimal
+_STRIPE_ZERO_DECIMAL_CURRENCIES = frozenset({
+    "bif", "clp", "djf", "gnf", "jpy", "kmf", "krw", "mga", "pyg",
+    "rwf", "ugx", "vnd", "vuv", "xaf", "xof", "xpf",
+})
+
+
+class StripePaymentGateway(PaymentGateway):
+    """Real gateway. Auth-then-capture (capture_method='manual' on create,
+    a real .capture() call on confirm) so a card is verified/held at hold
+    time without money actually moving until the booking is confirmed --
+    avoids charging then immediately refunding on any failure in between.
+
+    payment_method_token is a Stripe PaymentMethod id (pm_...) the client
+    obtained via Stripe.js/Elements -- raw card data never reaches this
+    service (NFR-B5), same guarantee the mock gateway already documented.
+    """
+
+    def __init__(self) -> None:
+        self._client = stripe.StripeClient(settings.stripe_secret_key)
+
+    def _stripe_amount(self, amount_minor: int, currency: str) -> int:
+        if currency.lower() in _STRIPE_ZERO_DECIMAL_CURRENCIES:
+            logger.warning(
+                "Zero-decimal currency %s passed to Stripe as amount_minor=%s unmodified -- "
+                "see _STRIPE_ZERO_DECIMAL_CURRENCIES's comment, this is almost certainly wrong.",
+                currency, amount_minor,
+            )
+        return amount_minor
+
+    async def create_intent(self, *, amount_minor: int, currency: str, payment_method_token: str) -> GatewayResult:
+        try:
+            intent = await self._client.v1.payment_intents.create_async({
+                "amount": self._stripe_amount(amount_minor, currency),
+                "currency": currency.lower(),
+                "payment_method": payment_method_token,
+                "capture_method": "manual",
+                "confirm": True,
+                "automatic_payment_methods": {"enabled": True, "allow_redirects": "never"},
+            })
+        except stripe.error.CardError as exc:
+            # A declined/failed card still creates a PaymentIntent on Stripe's
+            # side -- surface its id as gateway_ref so it's traceable in the
+            # Stripe dashboard even though this booking's hold gets released,
+            # not because anything downstream uses it for a failed payment.
+            pi_id = (exc.json_body or {}).get("error", {}).get("payment_intent", {}).get("id", "")
+            return GatewayResult(gateway_ref=pi_id, success=False, message=str(exc))
+        except stripe.error.StripeError as exc:
+            logger.error("Stripe create_intent failed: %s", exc)
+            return GatewayResult(gateway_ref="", success=False, message=str(exc))
+
+        # requires_capture is the expected status for capture_method=manual
+        # once Stripe has authorized the card; anything else (e.g.
+        # requires_action, for 3DS) isn't handled by this build yet -- see
+        # ROADMAP.md.
+        success = intent.status == "requires_capture"
+        return GatewayResult(gateway_ref=intent.id, success=success, message="" if success else f"unexpected status: {intent.status}")
+
+    async def capture(self, *, gateway_ref: str) -> GatewayResult:
+        try:
+            intent = await self._client.v1.payment_intents.capture_async(gateway_ref)
+        except stripe.error.StripeError as exc:
+            logger.error("Stripe capture failed for %s: %s", gateway_ref, exc)
+            return GatewayResult(gateway_ref=gateway_ref, success=False, message=str(exc))
+        return GatewayResult(gateway_ref=intent.id, success=intent.status == "succeeded")
+
+    async def refund(self, *, gateway_ref: str, amount_minor: int) -> GatewayResult:
+        try:
+            refund = await self._client.v1.refunds.create_async({
+                "payment_intent": gateway_ref,
+                "amount": amount_minor,
+            })
+        except stripe.error.StripeError as exc:
+            logger.error("Stripe refund failed for %s: %s", gateway_ref, exc)
+            return GatewayResult(gateway_ref=gateway_ref, success=False, message=str(exc))
+        return GatewayResult(gateway_ref=refund.id, success=refund.status in ("succeeded", "pending"))
+
+
 def get_payment_gateway() -> PaymentGateway:
     """Factory -- the single place that decides which gateway implementation is
-    live. Swap the return value to introduce a real provider.
+    live. Falls back to the mock (with a loud warning) if no Stripe key is
+    configured, so local dev/CI never needs a real Stripe account -- the
+    same dev-default-with-loud-name pattern as CREDENTIAL_ENCRYPTION_KEY.
     """
-    return MockPaymentGateway()
+    if not settings.stripe_secret_key:
+        logger.warning(
+            "STRIPE_SECRET_KEY is unset -- using MockPaymentGateway. Set a real "
+            "(test-mode is fine) Stripe secret key before any non-dev use."
+        )
+        return MockPaymentGateway()
+    return StripePaymentGateway()
 
 
 class PaymentService:

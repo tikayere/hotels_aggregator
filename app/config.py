@@ -47,9 +47,17 @@ class Settings(BaseSettings):
     # exists; matches docker-compose.dev.yml's aggregator service env.
     dev_shared_webhook_secret: str = "dev-secret-do-not-use-in-production"
 
-    # --- Payment gateway (mock in this build, see app/services/payment.py) ---
-    payment_gateway_api_key: str | None = None
-    payment_gateway_webhook_secret: str | None = None
+    # --- Payment gateway (Stripe, see app/services/payment.py) ---
+    # Both unset by default: get_payment_gateway() falls back to
+    # MockPaymentGateway (with a loud warning) when stripe_secret_key is
+    # empty, so local dev/CI never needs a real Stripe account. Test-mode
+    # keys (sk_test_.../pk_test_...) are free and instant to create at
+    # https://dashboard.stripe.com/test/apikeys -- no business verification
+    # needed for test mode.
+    stripe_secret_key: str | None = None
+    # Verifies the Stripe-Signature header on the webhook receiver
+    # (app/main.py) -- from the same dashboard, or `stripe listen` locally.
+    stripe_webhook_secret: str | None = None
 
     # --- Sync Engine cadence ---
     reconciliation_poll_interval_seconds: int = 900
