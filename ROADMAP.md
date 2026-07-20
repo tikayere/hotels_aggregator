@@ -113,6 +113,23 @@ Docker Hub images, not just against a mock.
   onboarding doc example) — found and worked around during testing, tracked
   here rather than fixed blind since the right fix (reject vs. auto-append)
   is a real design choice, not obvious enough to guess at.
+- **Traveler profile editing (part of FR-B6)** — `PATCH /api/v1/me`
+  (name/email/phone, all optional) and `POST /api/v1/me/password`
+  (separate endpoint, requires the current password). Email uniqueness is
+  checked against `TravelerAccount` only, deliberately not against
+  `HotelUser` — those are independent identity spaces by design (different
+  tables, different login endpoints, different JWT scopes), so a shared
+  email string across them isn't a conflict. Verified live: update, wrong
+  email conflict (against another traveler), password change followed by
+  successful login with the new password and rejection of the old one, and
+  wrong-current-password rejection.
+- **Optional search dates** — `check_in`/`check_out` on `/search` were the
+  only required filter; every other one (city, guests, price, star rating,
+  refundable) was already optional, which made a browse-first client
+  experience impossible without picking arbitrary placeholder dates.
+  Omitting either now defaults to a representative 1-night window starting
+  tomorrow. Built for the sibling `hotels`/`web` app's homepage, which now
+  shows real results with zero interaction.
 
 ## Implemented, but thinner than the spec describes
 
