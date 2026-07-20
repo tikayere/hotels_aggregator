@@ -82,6 +82,37 @@ Docker Hub images, not just against a mock.
   `CORS_ALLOWED_ORIGINS` (defaults wide open — every route here already
   guards itself by bearer/admin-key auth or is public read data, not by
   request origin).
+- **Reconciliation poller failure-handling crash, found and fixed** — found
+  live while seeding real search data to verify the sibling `hotels`
+  project's traveler-facing `web` app: any real `HotelERPError` (a hotel's
+  ERP being unreachable, timing out, or 404ing) crashed
+  `app/workers/reconciliation.py`'s except block itself
+  (`sqlalchemy.exc.MissingGreenlet`) instead of recording the failure and
+  moving on. Root cause: `except HotelERPError: await session.rollback();
+  await _record_failure(session, sh)` — `rollback()` expires every ORM
+  object the session was tracking, including `sh` (and `hotel`, read again
+  inside the same handler for logging), so touching their attributes
+  afterward triggers an implicit lazy-load that asyncpg's async session
+  can't service outside an explicit await. This meant a real hotel-ERP
+  outage would crash the exact job that exists to handle that gracefully
+  (NFR-B2 — every hotel ERP is untrusted/unreliable) rather than recording
+  `consecutive_failures`/`status=down` and moving on to the next hotel.
+  Fixed by capturing `hotel_id`/`hotel_slug` as plain values before the try
+  block and having `_record_failure` re-fetch `SyncHealth` fresh by id
+  instead of accepting a possibly-stale instance — removes the whole class
+  of bug, not just these two call sites. Verified live: a real 404 from a
+  misconfigured hotel now correctly records a failure and returns cleanly
+  instead of raising.
+- **`Hotel.api_base_url` onboarding footgun, found and documented** — must
+  include the `/api/v1` prefix (matching the contract's own server URL
+  convention, `openapi/hotel-erp-api.yaml`'s `servers:` entry) — nothing
+  validates or documents this, so a hotel onboarded with just the origin
+  (`http://host:8080` instead of `http://host:8080/api/v1`) silently 404s
+  on every reconciliation call. Not yet fixed with validation (worth adding
+  either a startup-time check in `HotelCreate`/`HotelUpdate` or a clearer
+  onboarding doc example) — found and worked around during testing, tracked
+  here rather than fixed blind since the right fix (reject vs. auto-append)
+  is a real design choice, not obvious enough to guess at.
 
 ## Implemented, but thinner than the spec describes
 

@@ -49,7 +49,21 @@ async def _circuit_open(hotel_id) -> bool:
     return bool(await cache.get_redis().get(_CIRCUIT_KEY.format(hotel_id=hotel_id)))
 
 
-async def _record_failure(session: AsyncSession, sh: SyncHealth) -> None:
+async def _record_failure(session: AsyncSession, hotel_id) -> None:
+    # Takes hotel_id, not a SyncHealth instance -- every caller invokes this
+    # right after `await session.rollback()`, which expires every object the
+    # session was tracking (including whatever SyncHealth it already had in
+    # hand). Mutating that expired instance directly triggers an implicit
+    # lazy-load, which asyncpg's async session can't service outside an
+    # explicit await (raises sqlalchemy.exc.MissingGreenlet) -- confirmed
+    # live: a real HotelERPError previously crashed this exact handler
+    # instead of recording the failure, defeating the point of the
+    # untrusted-ERP handling this function exists for (NFR-B2). Re-fetching
+    # fresh here removes the whole class of "caller passed a stale ORM
+    # object post-rollback" bug, not just this one call site.
+    sh = await session.get(SyncHealth, hotel_id)
+    if sh is None:
+        return
     sh.consecutive_failures += 1
     if sh.consecutive_failures >= settings.circuit_breaker_failure_threshold:
         sh.status = SyncHealthStatus.down
@@ -101,9 +115,12 @@ async def _upsert_room_type_from_api(session: AsyncSession, hotel: Hotel, rt: di
 
 
 async def _reconcile_one_hotel_room_types(session: AsyncSession, hotel: Hotel, cred: HotelCredential) -> None:
-    sh = await _get_sync_health(session, hotel.hotel_id)
-    if await _circuit_open(hotel.hotel_id):
-        logger.info("Circuit open for %s, skipping room-type reconcile", hotel.slug)
+    # Captured as plain values, not read off `hotel`/`sh` again after a
+    # rollback below -- see _record_failure's docstring-comment for why.
+    hotel_id, hotel_slug = hotel.hotel_id, hotel.slug
+    sh = await _get_sync_health(session, hotel_id)
+    if await _circuit_open(hotel_id):
+        logger.info("Circuit open for %s, skipping room-type reconcile", hotel_slug)
         return
     client = HotelERPClient.from_credential(cred)
     updated_since = sh.last_reconciliation_at.isoformat() if sh.last_reconciliation_at else None
@@ -118,23 +135,26 @@ async def _reconcile_one_hotel_room_types(session: AsyncSession, hotel: Hotel, c
             if not cursor:
                 break
         await _record_success(session, sh)
-        logger.info("Reconciled room types for %s", hotel.slug)
+        logger.info("Reconciled room types for %s", hotel_slug)
     except HotelERPError as exc:
-        logger.warning("Room-type reconcile failed for %s: %s", hotel.slug, exc)
+        logger.warning("Room-type reconcile failed for %s: %s", hotel_slug, exc)
         await session.rollback()
-        await _record_failure(session, sh)
+        await _record_failure(session, hotel_id)
 
 
 async def _resync_one_hotel_availability(session: AsyncSession, hotel: Hotel, cred: HotelCredential) -> None:
-    if await _circuit_open(hotel.hotel_id):
+    # Captured as plain values, not read off `hotel`/`sh` again after a
+    # rollback below -- see _record_failure's docstring-comment for why.
+    hotel_id, hotel_slug = hotel.hotel_id, hotel.slug
+    if await _circuit_open(hotel_id):
         return
-    sh = await _get_sync_health(session, hotel.hotel_id)
+    sh = await _get_sync_health(session, hotel_id)
     client = HotelERPClient.from_credential(cred)
     today = date.today()
     check_out = today + timedelta(days=AVAILABILITY_HORIZON_NIGHTS)
 
     room_types = list(
-        await session.scalars(select(RoomTypeIndex).where(RoomTypeIndex.hotel_id == hotel.hotel_id))
+        await session.scalars(select(RoomTypeIndex).where(RoomTypeIndex.hotel_id == hotel_id))
     )
     now = datetime.now(timezone.utc)
     try:
@@ -187,11 +207,11 @@ async def _resync_one_hotel_availability(session: AsyncSession, hotel: Hotel, cr
                     )
             await session.commit()
         await _record_success(session, sh)
-        logger.info("Full availability resync done for %s", hotel.slug)
+        logger.info("Full availability resync done for %s", hotel_slug)
     except HotelERPError as exc:
-        logger.warning("Availability resync failed for %s: %s", hotel.slug, exc)
+        logger.warning("Availability resync failed for %s: %s", hotel_slug, exc)
         await session.rollback()
-        await _record_failure(session, sh)
+        await _record_failure(session, hotel_id)
 
 
 async def _active_hotels(session: AsyncSession) -> list[tuple[Hotel, HotelCredential]]:
