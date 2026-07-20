@@ -130,6 +130,31 @@ Docker Hub images, not just against a mock.
   Omitting either now defaults to a representative 1-night window starting
   tomorrow. Built for the sibling `hotels`/`web` app's homepage, which now
   shows real results with zero interaction.
+- **FR-B5 real payment gateway (Stripe)** — `StripePaymentGateway`
+  (`app/services/payment.py`) implements the same `PaymentGateway` ABC the
+  mock always did: auth-then-capture (`capture_method=manual` on create, a
+  real `.capture()` on confirm) so a card is verified/held at hold time
+  without money moving until the booking actually confirms. Uses
+  stripe-python's async client throughout (this app never blocks its event
+  loop with a synchronous HTTP call anywhere else either). A webhook
+  receiver (`POST /api/v1/payments/webhooks/stripe`) handles
+  `payment_intent.payment_failed`/`charge.refunded` as defense in depth,
+  since Stripe's own guidance is not to rely solely on the synchronous
+  response. `get_payment_gateway()` falls back to `MockPaymentGateway`
+  (loud warning) when `STRIPE_SECRET_KEY` is unset, so dev/CI never need a
+  real Stripe account.
+
+  **Verified:** the fallback path end-to-end (full hold→confirm flow
+  through the real orchestrator code with the new gateway-selection logic
+  in place, not the old code), the Stripe API surface itself against a
+  running container (`stripe.StripeClient`, the non-deprecated
+  `client.v1.*` async methods, exception types — all introspected directly
+  against the installed SDK rather than assumed from memory).
+  **Not verified:** an actual charge/capture/refund against Stripe's API,
+  since that needs a real (test-mode is fine) Stripe account's keys, which
+  this build doesn't have. The zero-decimal-currency handling
+  (`_STRIPE_ZERO_DECIMAL_CURRENCIES`) is also unexercised — every hotel in
+  this build's test data prices in USD.
 
 ## Implemented, but thinner than the spec describes
 
@@ -141,11 +166,6 @@ Docker Hub images, not just against a mock.
 
 ## Not implemented
 
-- **FR-B5 real payment gateway** — `app/services/payment.py` is a mock that
-  always succeeds; no Stripe/Adyen/etc. integration exists yet. The
-  interface is deliberately shaped so a real gateway is a drop-in
-  replacement (opaque payment-method token in, `payment_reference` +
-  status out), but nothing beyond the mock has been built or tested.
 - **FR-B9 analytics/benchmarking** — no anonymized cross-hotel
   occupancy/ADR/RevPAR benchmark endpoint exists at all.
 - **Saved trips / notifications** (part of FR-B6) — traveler accounts,
